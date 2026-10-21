@@ -111,6 +111,38 @@ The server will be available at `http://localhost:8000`
 
 > 💡 **Advanced users:** Looking for multi-account support? See [Account System](#-account-system-advanced) below.
 
+### Model discovery and Claude Code
+
+The gateway retrieves account-specific models and token limits from the regional
+Amazon Q control plane (`q.<api-region>.amazonaws.com/ListAvailableModels`).
+Conversation requests continue to use `runtime.<api-region>.kiro.dev`.
+Discovery includes the inference profile for both desktop and SSO logins when
+available, so a general catalog is not mistaken for that profile's model list.
+All catalog pages are validated before replacing the cache. Initialized accounts
+refresh in the background in both legacy and account modes, so `/v1/models`
+returns immediately without waiting for the provider. `ACCOUNT_CACHE_TTL`
+controls refresh frequency (default: 43200 seconds; use 3600 for hourly updates).
+
+On startup, unavailable discovery falls back to the bundled, unverified model
+list. Later failures retain the previous catalog. Both cases retry discovery
+after five minutes. `MODEL_DISCOVERY_TIMEOUT` bounds each full discovery attempt
+(default: 15 seconds). Hidden models and aliases remain explicit user overrides;
+an upstream catalog entry does not guarantee every inference request succeeds.
+
+For Claude Code, add this to the `env` object in `~/.claude/settings.json`, then
+start a new Claude Code session:
+
+```json
+"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+```
+
+Discovery accepts either the gateway's `Authorization: Bearer` credential or
+its `x-api-key` credential. Claude Code adds gateway models alongside its built-in
+options and filters out IDs that contain neither `claude` nor `anthropic`.
+Select the explicit gateway model ID when a built-in option is unavailable on
+your Kiro account. Discovery does not switch the current model automatically.
+The gateway continues to pass unlisted model IDs upstream when requested directly.
+
 ### Option 1: JSON Credentials File (Kiro IDE / Enterprise)
 
 Specify the path to the credentials file:

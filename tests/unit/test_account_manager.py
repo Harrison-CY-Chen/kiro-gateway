@@ -15,6 +15,7 @@ import asyncio
 import json
 import pytest
 import time
+import httpx
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -809,7 +810,7 @@ class TestAccountManagerInitializeAccount:
         # Mock HTTP client to fail
         with patch('kiro.account_manager.KiroHttpClient') as mock_http_class:
             mock_client = AsyncMock()
-            mock_client.request_with_retry = AsyncMock(side_effect=Exception("Network error"))
+            mock_client.request_with_retry = AsyncMock(side_effect=httpx.ConnectError("Network error"))
             mock_client.close = AsyncMock()
             mock_http_class.return_value = mock_client
             
@@ -1300,3 +1301,166 @@ class TestFormatDuration:
         """Test formatting days."""
         assert _format_duration(86400) == "1d"
         assert _format_duration(172800) == "2d"
+
+
+def _catalog_test_manager(tmp_path: Path) -> tuple[AccountManager, Account]:
+    """Create an initialized account without loading credentials or using a network.
+
+    Args:
+        tmp_path: Isolated directory for manager state paths.
+
+    Returns:
+        Manager and initialized account with real cache and resolver objects.
+    """
+    manager = AccountManager(str(tmp_path / 'credentials.json'), str(tmp_path / 'state.json'))
+    auth = MagicMock(spec=KiroAuthManager)
+    auth.models_host = 'https://q.eu-central-1.amazonaws.com'
+    auth.api_host = 'https://runtime.eu-central-1.kiro.dev'
+    auth.auth_type = AuthType.AWS_SSO_OIDC
+    auth.profile_arn = None
+    cache = ModelInfoCache()
+    account = Account(id='catalog-account', auth_manager=auth, model_cache=cache,
+                      model_resolver=ModelResolver(cache, {}, aliases={}, hidden_from_list=[]))
+    manager._accounts[account.id] = account
+    return manager, account
+
+
+class TestAccountModelCatalog:
+    """Exercise real discovery, refresh, and failure handling without external I/O."""
+
+    @pytest.mark.asyncio
+    async def test_control_plane_pagination_preserves_metadata(self, tmp_path: Path) -> None:
+        """Fetch every page from the API region while leaving inference on runtime."""
+        manager, account = _catalog_test_manager(tmp_path)
+        pages = [
+            {'models': [{'modelId': 'first', 'tokenLimits': {'maxInputTokens': 1000000}}], 'nextToken': 'page-2'},
+            {'models': [{'modelId': 'second'}, {'modelId': 'first', 'tokenLimits': {'maxInputTokens': 900000}}]},
+        ]
+        client = AsyncMock()
+        client.request_with_retry.side_effect = [Mock(status_code=200, json=Mock(return_value=p)) for p in pages]
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            models = await manager._fetch_account_models(account.auth_manager)
+        assert [m['modelId'] for m in models] == ['first', 'second']
+        assert models[0]['tokenLimits']['maxInputTokens'] == 900000
+        calls = client.request_with_retry.call_args_list
+        assert calls[0].kwargs['url'] == 'https://q.eu-central-1.amazonaws.com/ListAvailableModels'
+        assert calls[0].kwargs['params'] == {'origin': 'AI_EDITOR'}
+        assert calls[1].kwargs['params']['nextToken'] == 'page-2'
+        assert account.auth_manager.api_host == 'https://runtime.eu-central-1.kiro.dev'
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('auth_type,include_profile', [
+        (AuthType.KIRO_DESKTOP, True), (AuthType.AWS_SSO_OIDC, True),
+        (AuthType.KIRO_DESKTOP, False), (AuthType.AWS_SSO_OIDC, False),
+    ])
+    async def test_profile_scope_matches_authentication(
+        self, tmp_path: Path, auth_type: AuthType, include_profile: bool,
+    ) -> None:
+        """Scope both login methods to the inference profile whenever one is available."""
+        manager, account = _catalog_test_manager(tmp_path)
+        account.auth_manager.auth_type = auth_type
+        account.auth_manager.profile_arn = (
+            'arn:aws:codewhisperer:eu-central-1:123:profile/test' if include_profile else None
+        )
+        client = AsyncMock()
+        client.request_with_retry.return_value = Mock(status_code=200, json=Mock(return_value={'models': []}))
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            assert await manager._fetch_account_models(account.auth_manager) == []
+        assert ('profileArn' in client.request_with_retry.call_args.kwargs['params']) is include_profile
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('payload', [
+        [], {}, {'models': None}, {'models': {}}, {'models': [None]},
+        {'models': [{}]}, {'models': [{'modelId': ''}]}, {'models': [{'modelId': 123}]},
+        {'models': [{'modelId': 'x', 'tokenLimits': []}]},
+        {'models': [{'modelId': 'x', 'tokenLimits': {'maxInputTokens': -1}}]},
+        {'models': [{'modelId': 'x', 'tokenLimits': {'maxInputTokens': True}}]},
+        {'models': [{'modelId': 'x', 'tokenLimits': {'maxOutputTokens': '128000'}}]},
+        {'models': [], 'nextToken': 123},
+    ])
+    async def test_malformed_catalog_is_rejected_and_client_closed(self, tmp_path: Path, payload: object) -> None:
+        """Reject invalid catalogs before they can replace the last working cache."""
+        manager, account = _catalog_test_manager(tmp_path)
+        client = AsyncMock()
+        client.request_with_retry.return_value = Mock(status_code=200, json=Mock(return_value=payload))
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            with pytest.raises(ValueError):
+                await manager._fetch_account_models(account.auth_manager)
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('status', [401, 403, 404, 429, 500, 503])
+    async def test_http_errors_do_not_become_empty_catalogs(self, tmp_path: Path, status: int) -> None:
+        """Treat upstream errors as failures rather than silently removing models."""
+        manager, account = _catalog_test_manager(tmp_path)
+        client = AsyncMock()
+        client.request_with_retry.return_value = Mock(status_code=status)
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            with pytest.raises(ValueError, match=str(status)):
+                await manager._fetch_account_models(account.auth_manager)
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_repeated_pagination_token_is_rejected(self, tmp_path: Path) -> None:
+        """Stop cyclic pagination without publishing the partial model list."""
+        manager, account = _catalog_test_manager(tmp_path)
+        client = AsyncMock()
+        client.request_with_retry.return_value = Mock(status_code=200, json=Mock(return_value={'models': [], 'nextToken': 'loop'}))
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            with pytest.raises(ValueError, match='pagination'):
+                await manager._fetch_account_models(account.auth_manager)
+        assert client.request_with_retry.await_count == 2
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_removes_retired_models_preserves_other_accounts(self, tmp_path: Path) -> None:
+        """Replace one account's metadata and mappings without deleting other accounts."""
+        manager, account = _catalog_test_manager(tmp_path)
+        await account.model_cache.update([{'modelId': 'retired'}])
+        manager._model_to_accounts = {'retired': ModelAccountList([account.id]), 'other': ModelAccountList(['other-account'])}
+        models = [{'modelId': 'new', 'tokenLimits': {'maxInputTokens': 1000000}}]
+        with patch.object(manager, '_fetch_account_models', AsyncMock(return_value=models)):
+            await manager._refresh_account_models(account.id)
+        assert account.model_cache.get_all_model_ids() == ['new']
+        assert account.model_cache.get_max_input_tokens('new') == 1000000
+        assert 'retired' not in manager._model_to_accounts
+        assert manager._model_to_accounts['other'].accounts == ['other-account']
+        assert manager._model_to_accounts['new'].accounts == [account.id]
+        assert account.models_refresh_after > account.models_cached_at
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('error', [ValueError('malformed'), asyncio.TimeoutError()])
+    async def test_refresh_failure_keeps_last_good_catalog_and_backs_off(self, tmp_path: Path, error: Exception) -> None:
+        """Keep valid models and schedule a bounded retry after failed discovery."""
+        manager, account = _catalog_test_manager(tmp_path)
+        await account.model_cache.update([{'modelId': 'working'}])
+        account.models_cached_at = 123.0
+        with patch.object(manager, '_fetch_account_models', AsyncMock(side_effect=error)):
+            await manager._refresh_account_models(account.id)
+        assert account.model_cache.get_all_model_ids() == ['working']
+        assert account.models_cached_at == 123.0
+        assert account.models_refresh_after > time.time()
+
+    @pytest.mark.asyncio
+    async def test_background_refresh_only_updates_due_initialized_accounts(self, tmp_path: Path) -> None:
+        """Run refresh in legacy mode without waking unused accounts or querying fresh ones."""
+        manager, account = _catalog_test_manager(tmp_path)
+        fresh = Account(id='fresh', auth_manager=MagicMock(), models_refresh_after=time.time() + 9999)
+        manager._accounts.update({'fresh': fresh, 'unused': Account(id='unused')})
+        refresh = AsyncMock()
+        with patch.object(manager, '_refresh_account_models', refresh), patch('kiro.account_manager.asyncio.sleep', side_effect=asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await manager.refresh_models_periodically()
+        refresh.assert_awaited_once_with(account.id)
+
+    @pytest.mark.asyncio
+    async def test_discovery_cancellation_closes_client(self, tmp_path: Path) -> None:
+        """Shutdown must cancel an in-flight discovery request and release its client."""
+        manager, account = _catalog_test_manager(tmp_path)
+        client = AsyncMock()
+        client.request_with_retry.side_effect = asyncio.CancelledError
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            with pytest.raises(asyncio.CancelledError):
+                await manager._fetch_account_models(account.auth_manager)
+        client.close.assert_awaited_once()

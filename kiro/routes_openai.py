@@ -27,6 +27,7 @@ Contains all API endpoints:
 """
 
 import json
+from typing import Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
@@ -63,6 +64,7 @@ except ImportError:
 
 # --- Security scheme ---
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+models_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 
 async def verify_api_key(auth_header: str = Security(api_key_header)) -> bool:
@@ -119,7 +121,28 @@ async def health():
         "version": APP_VERSION
     }
 
-@router.get("/v1/models", response_model=ModelList, dependencies=[Depends(verify_api_key)])
+async def verify_models_api_key(
+    auth_header: Optional[str] = Security(api_key_header),
+    x_api_key: Optional[str] = Security(models_api_key_header),
+) -> bool:
+    """Authenticate discovery for both OpenAI and Anthropic clients.
+
+    Args:
+        auth_header: OpenAI bearer credential, when supplied.
+        x_api_key: Anthropic API credential, when supplied.
+
+    Returns:
+        True when either credential matches the configured gateway key.
+
+    Raises:
+        HTTPException: Neither credential authenticates the request.
+    """
+    if auth_header == f"Bearer {PROXY_API_KEY}" or x_api_key == PROXY_API_KEY:
+        return True
+    raise HTTPException(status_code=401, detail="Invalid or missing API Key")
+
+
+@router.get("/v1/models", response_model=ModelList, dependencies=[Depends(verify_models_api_key)])
 async def get_models(request: Request):
     """
     Return list of available models.

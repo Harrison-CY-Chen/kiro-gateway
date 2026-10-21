@@ -506,6 +506,9 @@ async def lifespan(app: FastAPI):
     save_task = asyncio.create_task(
         app.state.account_manager.save_state_periodically()
     )
+    models_task = asyncio.create_task(
+        app.state.account_manager.refresh_models_periodically()
+    )
     
     logger.info("Account system initialized successfully")
     
@@ -514,12 +517,14 @@ async def lifespan(app: FastAPI):
     # Graceful shutdown
     logger.info("Shutting down application...")
     
-    # Cancel background task
-    save_task.cancel()
-    try:
-        await save_task
-    except asyncio.CancelledError:
-        pass
+    # Stop catalog requests and state persistence before closing shared resources.
+    for task in (save_task, models_task):
+        task.cancel()
+    for task in (save_task, models_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     
     # Final state save
     await app.state.account_manager._save_state()

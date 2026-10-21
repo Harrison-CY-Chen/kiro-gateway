@@ -4251,3 +4251,12 @@ class TestAPIRegionPriorityHierarchy:
         print(f"Result: api_host={manager5._api_host}")
         assert "ap-south-1" in manager5._api_host
 
+
+
+@pytest.mark.parametrize('api_region', ['us-east-1', 'eu-central-1'])
+def test_model_control_plane_uses_api_region_independently_of_login(api_region: str) -> None:
+    """Keep catalog discovery in the inference region rather than the SSO region."""
+    manager = KiroAuthManager(refresh_token='synthetic-token', region='us-west-2', api_region=api_region)
+    assert manager.models_host == f'https://q.{api_region}.amazonaws.com'
+    assert manager.api_host == f'https://runtime.{api_region}.kiro.dev'
+    assert manager.q_host == f'https://runtime.{api_region}.kiro.dev'

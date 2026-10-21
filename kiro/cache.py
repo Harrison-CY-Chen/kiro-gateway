@@ -30,7 +30,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from kiro.config import MODEL_CACHE_TTL, DEFAULT_MAX_INPUT_TOKENS
+from kiro.config import MODEL_CACHE_TTL, DEFAULT_MAX_INPUT_TOKENS, MODEL_ALIASES
+from kiro.model_resolver import normalize_model_name
 
 
 class ModelInfoCache:
@@ -87,7 +88,8 @@ class ModelInfoCache:
         Returns:
             Dictionary with model information or None if model not found
         """
-        return self._cache.get(model_id)
+        normalized = normalize_model_name(MODEL_ALIASES.get(model_id, model_id))
+        return self._cache.get(model_id) or self._cache.get(normalized)
     
     def is_valid_model(self, model_id: str) -> bool:
         """
@@ -136,7 +138,7 @@ class ModelInfoCache:
         Returns:
             Maximum number of input tokens or DEFAULT_MAX_INPUT_TOKENS
         """
-        model = self._cache.get(model_id)
+        model = self.get(model_id)
         if model and model.get("tokenLimits"):
             return model["tokenLimits"].get("maxInputTokens") or DEFAULT_MAX_INPUT_TOKENS
         return DEFAULT_MAX_INPUT_TOKENS

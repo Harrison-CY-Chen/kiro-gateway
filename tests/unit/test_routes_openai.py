@@ -1998,3 +1998,26 @@ class TestChatCompletionsLegacyMode:
         
         assert failover_enabled is False
         print("✅ Legacy mode correctly skips failover loop")
+
+class TestModelDiscoveryAuthentication:
+    """Authenticate Claude Code discovery without weakening completion authentication."""
+
+    @pytest.mark.parametrize('headers,expected', [
+        ({'x-api-key': PROXY_API_KEY}, 200),
+        ({'Authorization': f'Bearer {PROXY_API_KEY}'}, 200),
+        ({'Authorization': 'Bearer invalid', 'x-api-key': PROXY_API_KEY}, 200),
+        ({'x-api-key': 'invalid'}, 401),
+        ({}, 401),
+    ])
+    def test_discovery_accepts_both_protocol_credentials(self, test_client: TestClient, headers: dict[str, str], expected: int) -> None:
+        """Serve discovery for either API's valid credential and reject missing keys."""
+        response = test_client.get('/v1/models?limit=1000', headers=headers)
+        assert response.status_code == expected
+        if expected == 200:
+            assert isinstance(response.json()['data'], list)
+
+    def test_openai_completion_still_requires_bearer_token(self, test_client: TestClient) -> None:
+        """Limit Anthropic-key compatibility to the shared discovery endpoint."""
+        response = test_client.post('/v1/chat/completions', headers={'x-api-key': PROXY_API_KEY},
+                                    json={'model': 'auto', 'messages': [{'role': 'user', 'content': 'test'}]})
+        assert response.status_code == 401

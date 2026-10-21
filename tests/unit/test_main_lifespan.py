@@ -385,6 +385,10 @@ class TestLifespanAccountManagerInit:
             
             async def save_state_periodically(self):
                 await asyncio.sleep(1000)
+
+            async def refresh_models_periodically(self) -> None:
+                """Keep the mock discovery worker alive until shutdown."""
+                await asyncio.sleep(1000)
         
         with patch("main.AccountManager", MockAccountManager):
             with patch("main.httpx.AsyncClient") as mock_client_class:
@@ -821,6 +825,7 @@ class TestLifespanAccountManagerInit:
         monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(state_file))
         
         task_cancelled = False
+        models_cancelled = False
         
         mock_manager = AsyncMock()
         mock_manager._accounts = {"test": MagicMock()}
@@ -837,6 +842,17 @@ class TestLifespanAccountManagerInit:
                 raise
         
         mock_manager.save_state_periodically = periodic_save_with_cancel_check
+
+        async def periodic_models_with_cancel_check() -> None:
+            """Record cancellation of the model-discovery worker."""
+            nonlocal models_cancelled
+            try:
+                await asyncio.sleep(1000)
+            except asyncio.CancelledError:
+                models_cancelled = True
+                raise
+
+        mock_manager.refresh_models_periodically = periodic_models_with_cancel_check
         
         with patch("main.AccountManager", return_value=mock_manager):
             with patch("main.httpx.AsyncClient") as mock_client_class:
@@ -854,6 +870,7 @@ class TestLifespanAccountManagerInit:
         # Assert
         print(f"Task cancelled: {task_cancelled}")
         assert task_cancelled is True
+        assert models_cancelled is True
         print("✓ Background task was cancelled on shutdown")
     
     @pytest.mark.asyncio

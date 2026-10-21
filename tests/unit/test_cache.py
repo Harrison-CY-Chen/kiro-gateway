@@ -435,3 +435,19 @@ class TestModelInfoCacheThreadSafety:
         print("Проверка: Все чтения вернули одинаковый результат...")
         assert all(r is not None for r in results)
         assert all(r["modelId"] == "claude-sonnet-4" for r in results)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model_id', ['claude-opus-5.5', 'claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-opus-5.5[1m]'])
+async def test_catalog_capacity_matches_client_model_spellings(model_id: str) -> None:
+    """Use discovered capacity for client spellings instead of the 200K fallback."""
+    cache = ModelInfoCache()
+    await cache.update([{'modelId': 'claude-opus-5.5', 'tokenLimits': {'maxInputTokens': 1000000}}])
+    assert cache.get_max_input_tokens(model_id) == 1000000
+
+
+@pytest.mark.asyncio
+async def test_auto_alias_uses_discovered_capacity() -> None:
+    """Resolve the default auto-kiro alias when looking up model metadata."""
+    cache = ModelInfoCache()
+    await cache.update([{'modelId': 'auto', 'tokenLimits': {'maxInputTokens': 1000000}}])
+    assert cache.get_max_input_tokens('auto-kiro') == 1000000

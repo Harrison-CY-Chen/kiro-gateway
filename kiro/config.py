@@ -184,6 +184,9 @@ KIRO_API_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 # Host for Q API (ListAvailableModels)
 KIRO_Q_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 
+# Model discovery uses the regional control plane, independently of inference/MCP.
+KIRO_MODELS_HOST_TEMPLATE: str = "https://q.{region}.amazonaws.com"
+
 # ==================================================================================================
 # Token Settings
 # ==================================================================================================
@@ -541,8 +544,13 @@ ACCOUNT_PROBABILISTIC_RETRY_CHANCE: float = float(os.getenv("ACCOUNT_PROBABILIST
 # ==================================================================================================
 
 # Model cache TTL in seconds (12 hours)
-# Cache is refreshed only when account is used (not in background)
+# Initialized accounts are refreshed in the background, including legacy mode.
 ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
+
+# Bound the entire catalog fetch, including retries and pagination.
+MODEL_DISCOVERY_TIMEOUT: float = float(os.getenv("MODEL_DISCOVERY_TIMEOUT", "15"))
+MODEL_DISCOVERY_RETRY_INTERVAL: float = 300.0
+MODEL_DISCOVERY_POLL_INTERVAL: float = 60.0
 
 # ==================================================================================================
 # State Persistence Settings
@@ -578,4 +586,16 @@ def get_kiro_api_host(region: str) -> str:
 def get_kiro_q_host(region: str) -> str:
     """Return Q API host for the specified region."""
     return KIRO_Q_HOST_TEMPLATE.format(region=region)
+
+
+def get_kiro_models_host(region: str) -> str:
+    """Return the model control-plane host for the API region.
+
+    Args:
+        region: Account's resolved API region, independently of its login region.
+
+    Returns:
+        Regional Amazon Q model-catalog origin.
+    """
+    return KIRO_MODELS_HOST_TEMPLATE.format(region=region)
 

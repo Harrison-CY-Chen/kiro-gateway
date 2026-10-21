@@ -9,7 +9,7 @@ Tests cover:
 - Circuit Breaker with exponential backoff
 - Half-Open recovery
 - State persistence across restarts
-- TTL refresh on usage
+- Background catalog refresh without blocking requests
 """
 
 import asyncio
@@ -428,70 +428,63 @@ class TestAccountSystemFullFlow:
         print("✓ State was persisted and restored correctly")
     
     @pytest.mark.asyncio
-    async def test_ttl_refresh_on_usage(
-        self,
-        tmp_path,
-        temp_account_credentials_files,
-        mock_list_models_response
-    ):
-        """
-        Test 142: TTL обновляется только при использовании аккаунта
-        
-        What it does: Verifies model cache is refreshed when TTL expires during usage
-        Purpose: Ensure cache stays fresh without background tasks
-        """
-        print("\n=== Test 142: TTL refresh on usage ===")
-        
-        # Arrange
-        creds_file = tmp_path / "credentials.json"
-        state_file = tmp_path / "state.json"
-        
-        account1_path = temp_account_credentials_files["account1"]
-        
-        credentials = [
-            {"type": "json", "path": account1_path, "enabled": True}
-        ]
-        creds_file.write_text(json.dumps(credentials))
-        
-        manager = AccountManager(str(creds_file), str(state_file))
+    @pytest.mark.parametrize('account_system', [False, True])
+    async def test_background_catalog_refresh_does_not_block_requests(
+        self, tmp_path: Path, temp_account_credentials_files: dict[str, str], account_system: bool,
+    ) -> None:
+        """Refresh real caches in both modes while account selection and listing remain responsive."""
+        from types import SimpleNamespace
+        from kiro.routes_openai import get_models
+
+        credentials = tmp_path / 'credentials.json'
+        credentials.write_text(json.dumps([
+            {'type': 'json', 'path': temp_account_credentials_files['account1'], 'enabled': True}
+        ]))
+        manager = AccountManager(str(credentials), str(tmp_path / 'state.json'))
         await manager.load_credentials()
-        await manager.load_state()
-        
-        # Initialize account
-        account_id = list(manager._accounts.keys())[0]
+        account_id = next(iter(manager._accounts))
+        initial = {'models': [{'modelId': 'claude-old'}]}
+        client = AsyncMock()
+        client.request_with_retry.return_value = Mock(status_code=200, json=Mock(return_value=initial))
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            assert await manager._initialize_account(account_id)
         account = manager._accounts[account_id]
-        account.auth_manager = MagicMock()
-        account.model_cache = MagicMock()
-        account.model_resolver = MagicMock()
-        account.model_resolver.get_available_models.return_value = ["claude-opus-4.5"]
-        
-        # Set old cache timestamp (expired TTL)
-        from kiro.config import ACCOUNT_CACHE_TTL
-        account.models_cached_at = time.time() - ACCOUNT_CACHE_TTL - 1
-        print(f"Cache age: {time.time() - account.models_cached_at}s (TTL: {ACCOUNT_CACHE_TTL}s)")
-        
-        from kiro.account_manager import ModelAccountList
-        manager._model_to_accounts["claude-opus-4.5"] = ModelAccountList()
-        manager._model_to_accounts["claude-opus-4.5"].accounts.append(account_id)
-        
-        # Mock refresh method
-        refresh_called = False
-        original_cached_at = account.models_cached_at
-        
-        async def mock_refresh(acc_id):
-            nonlocal refresh_called
-            refresh_called = True
-            manager._accounts[acc_id].models_cached_at = time.time()
-        
-        with patch.object(manager, '_refresh_account_models', side_effect=mock_refresh):
-            # Act: Get account (should trigger TTL refresh)
-            next_account = await manager.get_next_account("claude-opus-4.5")
-        
-        # Assert: Refresh was called and timestamp updated
-        print(f"Refresh called: {refresh_called}")
-        print(f"Old timestamp: {original_cached_at}")
-        print(f"New timestamp: {account.models_cached_at}")
-        
-        assert refresh_called is True
-        assert account.models_cached_at > original_cached_at
-        print("✓ Cache was refreshed on usage when TTL expired")
+        account.models_refresh_after = 0
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            account_system=account_system, account_manager=manager,
+        )))
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed_catalog(**kwargs: object) -> Mock:
+            """Hold a new catalog in flight while serving independent requests."""
+            started.set()
+            await release.wait()
+            return Mock(status_code=200, json=Mock(return_value={'models': [
+                {'modelId': 'claude-new', 'tokenLimits': {'maxInputTokens': 1000000}}
+            ]}))
+
+        client.request_with_retry.side_effect = delayed_catalog
+        with patch('kiro.account_manager.KiroHttpClient', return_value=client):
+            worker = asyncio.create_task(manager.refresh_models_periodically())
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                selected = await asyncio.wait_for(manager.get_next_account('claude-old'), 1)
+                assert selected is account
+                before = await asyncio.wait_for(get_models(request), 1)
+                assert 'claude-old' in [model.id for model in before.data]
+                release.set()
+
+                async def wait_for_update() -> None:
+                    """Wait for atomic publication rather than assuming task ordering."""
+                    while account.model_cache.get('claude-new') is None:
+                        await asyncio.sleep(0)
+
+                await asyncio.wait_for(wait_for_update(), 1)
+                after = await get_models(request)
+                assert 'claude-new' in [model.id for model in after.data]
+                assert 'claude-old' not in [model.id for model in after.data]
+                assert account.model_cache.get_max_input_tokens('claude-new') == 1000000
+            finally:
+                worker.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await worker
