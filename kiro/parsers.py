@@ -246,6 +246,8 @@ class AwsEventStreamParser:
         ('{"followupPrompt":', 'followup'),
         ('{"usage":', 'usage'),
         ('{"contextUsagePercentage":', 'context_usage'),
+        ('{"stopReason":', 'metadata'),
+        ('{"stopDetails":', 'metadata'),
     ]
     
     def __init__(self):
@@ -328,6 +330,8 @@ class AwsEventStreamParser:
             return {"type": "usage", "data": data.get('usage', 0)}
         elif event_type == 'context_usage':
             return {"type": "context_usage", "data": data.get('contextUsagePercentage', 0)}
+        elif event_type == 'metadata':
+            return {"type": "metadata", "data": data}
         
         return None
     

@@ -143,6 +143,26 @@ Select the explicit gateway model ID when a built-in option is unavailable on
 your Kiro account. Discovery does not switch the current model automatically.
 The gateway continues to pass unlisted model IDs upstream when requested directly.
 
+### Replies stop after tool use or arrive with no visible output
+
+Kiro can return HTTP 200 with a `CONTENT_FILTERED` stop reason inside its stream.
+The gateway reports this as an explicit error, including when text was already
+streamed. Non-streaming requests return HTTP 400. Filtered requests are not
+automatically retried or sent to another account.
+
+If the reason is `REASONING_EXTRACTION`, Kiro has rejected instructions to expose
+internal reasoning. The gateway's optional simulated reasoning can trigger this.
+Disable that feature in your gateway environment and restart the gateway:
+
+```dotenv
+FAKE_REASONING=false
+```
+
+This disables the gateway's extra thinking prompts; it does not enable native
+adaptive thinking. User messages are preserved. If an existing conversation
+still fails, start a new conversation. Both API formats and streaming modes
+report refusals explicitly instead of returning an empty successful answer.
+
 ### Claude Code messages, text attachments, and validation errors
 
 Anthropic requests also accept inline `role="system"` messages emitted by Claude

@@ -490,3 +490,48 @@ def test_inline_system_conversation_completes_in_all_api_modes(
         assert ('event: message_stop' if api == 'anthropic' else 'data: [DONE]') in response.text
     else:
         assert 'synthetic reply' in response.text
+
+
+@pytest.mark.parametrize('api', ['anthropic', 'openai'])
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('partial', [False, True])
+@pytest.mark.parametrize('account_system', [False, True])
+def test_upstream_refusals_are_explicit_instead_of_successful_empty_responses(
+    test_client: TestClient, api: str, stream: bool, partial: bool, account_system: bool,
+) -> None:
+    """Expose refusals before or after text without replaying requests or reporting normal completion."""
+    metadata = {'stopDetails': {'refusal': {'category': 'REASONING_EXTRACTION',
+                                         'explanation': 'PRIVATE_PROVIDER_DETAILS' * 10000}},
+                'stopReason': 'CONTENT_FILTERED'}
+    raw = (b'{"content":"already visible text"}' if partial else b'')
+    raw += json.dumps(metadata, separators=(',', ':')).encode() + b'{"contextUsagePercentage":1}'
+    client = AsyncMock()
+    client.request_with_retry.return_value = httpx.Response(200, content=raw)
+    module = 'kiro.routes_anthropic' if api == 'anthropic' else 'kiro.routes_openai'
+    path = '/v1/messages' if api == 'anthropic' else '/v1/chat/completions'
+    with (patch(module + '.KiroHttpClient', return_value=client),
+          patch('kiro.streaming_core.FAKE_REASONING_ENABLED', False),
+          patch.object(test_client.app.state, 'account_system', account_system)):
+        response = test_client.post(path, json={
+            'model': 'claude-sonnet-4.5', 'max_tokens': 128, 'stream': stream,
+            'messages': [{'role': 'user', 'content': 'Synthetic request'}],
+        }, headers={'Authorization': f'Bearer {PROXY_API_KEY}', 'x-api-key': PROXY_API_KEY})
+    assert response.status_code == (200 if stream else 400)
+    assert 'FAKE_REASONING=false' in response.text
+    assert 'PRIVATE_PROVIDER_DETAILS' not in response.text
+    assert len(response.content) < 8192
+    assert client.request_with_retry.await_count == 1
+    client.close.assert_awaited_once()
+    if stream:
+        assert '"invalid_request_error"' in response.text
+        if api == 'anthropic':
+            assert response.text.count('event: error') == 1
+            assert 'event: message_stop' not in response.text
+            assert '"stop_reason": "end_turn"' not in response.text
+        else:
+            assert '"invalid_request_error"' in response.text
+            assert '"finish_reason": "stop"' not in response.text
+        if partial:
+            assert 'already visible text' in response.text
+    else:
+        assert response.json()['error']['type'] == 'invalid_request_error'

@@ -1357,3 +1357,25 @@ class TestTruncationRecoveryIntegration:
         
         print("Checking: Third tool call NOT marked as truncated...")
         assert aws_event_parser.tool_calls[2].get("_truncation_detected") is not True
+
+@pytest.mark.parametrize('details_first', [False, True])
+def test_stop_metadata_survives_every_chunk_boundary(details_first: bool) -> None:
+    """Parse both observed metadata key orders even when split at any byte offset."""
+    import json
+    details = {'refusal': {'category': 'REASONING_EXTRACTION', 'explanation': 'synthetic'}}
+    metadata = {'stopDetails': details, 'stopReason': 'CONTENT_FILTERED'} if details_first else {
+        'stopReason': 'CONTENT_FILTERED', 'stopDetails': details,
+    }
+    raw = json.dumps(metadata, separators=(',', ':')).encode()
+    for offset in range(len(raw) + 1):
+        parser = AwsEventStreamParser()
+        events = parser.feed(raw[:offset]) + parser.feed(raw[offset:])
+        assert events == [{'type': 'metadata', 'data': metadata}]
+
+
+def test_normal_stop_metadata_preserves_surrounding_content_events() -> None:
+    """Do not consume adjacent response text while recognizing metadata."""
+    parser = AwsEventStreamParser()
+    events = parser.feed(b'{"content":"before"}{"stopReason":"END_TURN"}{"contextUsagePercentage":1}')
+    assert [event['type'] for event in events] == ['content', 'metadata', 'context_usage']
+    assert events[0]['data'] == 'before'

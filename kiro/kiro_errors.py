@@ -42,6 +42,38 @@ from typing import Dict, Any
 from loguru import logger
 
 
+class KiroStreamError(RuntimeError):
+    """An upstream refusal delivered inside an otherwise successful HTTP stream."""
+
+
+def raise_for_stream_metadata(metadata: Dict[str, Any]) -> None:
+    """Reject filtered responses instead of treating their metadata as completion.
+
+    Args:
+        metadata: Parsed Kiro metadata event, including its stop reason.
+
+    Raises:
+        KiroStreamError: When Kiro reports that the response was filtered.
+    """
+    if metadata.get("stopReason") != "CONTENT_FILTERED":
+        return
+    details = metadata.get("stopDetails")
+    refusal = details.get("refusal") if isinstance(details, dict) else None
+    category = refusal.get("category") if isinstance(refusal, dict) else None
+    if category == "REASONING_EXTRACTION":
+        message = (
+            "Kiro rejected a request to expose internal reasoning. "
+            "If gateway simulated reasoning is enabled, set FAKE_REASONING=false "
+            "and retry. If this conversation still fails, start a new conversation."
+        )
+    else:
+        message = (
+            "Kiro declined this response (CONTENT_FILTERED). "
+            "Review the request before trying again."
+        )
+    raise KiroStreamError(message)
+
+
 @dataclass
 class KiroErrorInfo:
     """

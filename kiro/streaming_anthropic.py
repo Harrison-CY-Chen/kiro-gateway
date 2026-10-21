@@ -50,6 +50,7 @@ from kiro.streaming_core import (
 from kiro.tokenizer import count_tokens, estimate_request_tokens
 from kiro.parsers import parse_bracket_tool_calls, deduplicate_tool_calls
 from kiro.config import FIRST_TOKEN_TIMEOUT, FIRST_TOKEN_MAX_RETRIES, FAKE_REASONING_HANDLING
+from kiro.kiro_errors import KiroStreamError
 
 if TYPE_CHECKING:
     from kiro.auth import KiroAuthManager
@@ -693,6 +694,9 @@ async def stream_kiro_to_anthropic(
         )
         
     except FirstTokenTimeoutError:
+        raise
+    except KiroStreamError:
+        # The route emits the error once; never emit a normal message_stop.
         raise
     except GeneratorExit:
         logger.debug("Client disconnected (GeneratorExit)")

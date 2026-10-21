@@ -51,6 +51,8 @@ from kiro.model_resolver import ModelResolver
 from kiro.converters_openai import build_kiro_payload
 from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response, stream_with_first_token_retry
 from kiro.http_client import KiroHttpClient
+from kiro.kiro_errors import KiroStreamError
+from kiro.exceptions import stream_error_response
 from kiro.utils import generate_conversation_id
 from kiro.config import WEB_SEARCH_ENABLED
 from kiro.mcp_tools import handle_native_web_search
@@ -418,6 +420,11 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                             except GeneratorExit:
                                 client_disconnected = True
                                 logger.debug("Client disconnected during streaming (GeneratorExit in routes)")
+                            except KiroStreamError as e:
+                                streaming_error = e
+                                error_json = stream_error_response(e).body.decode("utf-8")
+                                yield f"data: {error_json}\n\n"
+                                yield "data: [DONE]\n\n"
                             except Exception as e:
                                 streaming_error = e
                                 try:
@@ -526,6 +533,9 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         
                         continue  # Next iteration
             
+            except KiroStreamError as e:
+                await http_client.close()
+                return stream_error_response(e)
             except HTTPException as e:
                 await http_client.close()
                 
@@ -715,6 +725,11 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                     # Client disconnected - this is normal
                     client_disconnected = True
                     logger.debug("Client disconnected during streaming (GeneratorExit in routes)")
+                except KiroStreamError as e:
+                    streaming_error = e
+                    error_json = stream_error_response(e).body.decode("utf-8")
+                    yield f"data: {error_json}\n\n"
+                    yield "data: [DONE]\n\n"
                 except Exception as e:
                     streaming_error = e
                     # Try to send [DONE] to client before finishing
@@ -768,6 +783,9 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             
             return JSONResponse(content=openai_response)
     
+    except KiroStreamError as e:
+        await http_client.close()
+        return stream_error_response(e)
     except HTTPException as e:
         await http_client.close()
         

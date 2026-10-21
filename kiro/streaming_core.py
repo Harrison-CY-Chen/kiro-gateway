@@ -45,6 +45,7 @@ from kiro.config import (
     FAKE_REASONING_HANDLING,
 )
 from kiro.thinking_parser import ThinkingParser
+from kiro.kiro_errors import raise_for_stream_metadata
 
 if TYPE_CHECKING:
     from kiro.cache import ModelInfoCache
@@ -280,6 +281,8 @@ async def _process_chunk(
         
         elif event["type"] == "context_usage":
             yield KiroEvent(type="context_usage", context_usage_percentage=event["data"])
+        elif event["type"] == "metadata":
+            raise_for_stream_metadata(event["data"])
 
 
 # ==================================================================================================

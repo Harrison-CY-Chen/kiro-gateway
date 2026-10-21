@@ -51,6 +51,8 @@ from kiro.streaming_anthropic import (
     stream_with_first_token_retry_anthropic,
 )
 from kiro.http_client import KiroHttpClient
+from kiro.kiro_errors import KiroStreamError
+from kiro.exceptions import stream_error_response
 from kiro.utils import generate_conversation_id
 from kiro.tokenizer import estimate_request_tokens
 from kiro.config import WEB_SEARCH_ENABLED
@@ -462,6 +464,10 @@ async def messages(
                             except GeneratorExit:
                                 client_disconnected = True
                                 logger.debug("Client disconnected during streaming (GeneratorExit in routes)")
+                            except KiroStreamError as e:
+                                streaming_error = e
+                                error_json = stream_error_response(e).body.decode("utf-8")
+                                yield f"event: error\ndata: {error_json}\n\n"
                             except Exception as e:
                                 streaming_error = e
                                 try:
@@ -578,6 +584,9 @@ async def messages(
                         
                         continue  # Next iteration
             
+            except KiroStreamError as e:
+                await http_client.close()
+                return stream_error_response(e)
             except HTTPException as e:
                 await http_client.close()
                 
@@ -820,6 +829,10 @@ async def messages(
                 except GeneratorExit:
                     client_disconnected = True
                     logger.debug("Client disconnected during streaming (GeneratorExit in routes)")
+                except KiroStreamError as e:
+                    streaming_error = e
+                    error_json = stream_error_response(e).body.decode("utf-8")
+                    yield f"event: error\ndata: {error_json}\n\n"
                 except Exception as e:
                     streaming_error = e
                     # Send error event to client, then gracefully end the stream
@@ -875,6 +888,9 @@ async def messages(
             
             return JSONResponse(content=anthropic_response)
     
+    except KiroStreamError as e:
+        await http_client.close()
+        return stream_error_response(e)
     except HTTPException as e:
         await http_client.close()
         

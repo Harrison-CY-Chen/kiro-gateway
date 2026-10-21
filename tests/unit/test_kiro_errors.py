@@ -625,3 +625,31 @@ class TestEnhanceImproperlyFormedRequest:
 
         # Should fall through to generic handler, not the size-limit message
         assert "payload size exceeded" not in error_info.user_message
+
+
+@pytest.mark.parametrize('details', [None, [], 'invalid', {}, {'refusal': None},
+                                      {'refusal': []}, {'refusal': {'category': 'OTHER'}}])
+def test_filtered_metadata_handles_missing_or_malformed_details(details: object) -> None:
+    """Refuse filtered output without depending on optional metadata shape or echoing details."""
+    from kiro.kiro_errors import KiroStreamError, raise_for_stream_metadata
+    with pytest.raises(KiroStreamError, match='CONTENT_FILTERED'):
+        raise_for_stream_metadata({'stopReason': 'CONTENT_FILTERED', 'stopDetails': details})
+
+
+def test_reasoning_refusal_has_actionable_bounded_message() -> None:
+    """Identify the optional gateway feature without reflecting upstream explanations."""
+    from kiro.kiro_errors import KiroStreamError, raise_for_stream_metadata
+    with pytest.raises(KiroStreamError) as error:
+        raise_for_stream_metadata({'stopReason': 'CONTENT_FILTERED', 'stopDetails': {
+            'refusal': {'category': 'REASONING_EXTRACTION', 'explanation': 'PRIVATE' * 100000},
+        }})
+    assert 'FAKE_REASONING=false' in str(error.value)
+    assert 'PRIVATE' not in str(error.value)
+    assert len(str(error.value)) < 500
+
+
+@pytest.mark.parametrize('reason', ['END_TURN', 'TOOL_USE', None, '', 'FUTURE_REASON', 12])
+def test_nonfiltered_metadata_is_not_rejected(reason: object) -> None:
+    """Preserve normal and unknown upstream stop metadata without changing their behavior."""
+    from kiro.kiro_errors import raise_for_stream_metadata
+    raise_for_stream_metadata({'stopReason': reason})

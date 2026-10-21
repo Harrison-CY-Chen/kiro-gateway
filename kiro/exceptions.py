@@ -31,6 +31,7 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
+from kiro.kiro_errors import KiroStreamError
 
 MAX_VALIDATION_RESPONSE_BYTES: int = 8192
 MAX_VALIDATION_ERRORS: int = 10
@@ -38,6 +39,22 @@ MAX_VALIDATION_FIELD_LENGTH: int = 120
 MAX_VALIDATION_MESSAGE_LENGTH: int = 160
 MAX_VALIDATION_LOCATION_DEPTH: int = 12
 MAX_VALIDATION_ERROR_MESSAGE_LENGTH: int = 480
+
+
+def stream_error_response(error: KiroStreamError) -> JSONResponse:
+    """Return a compatible client error for a refusal found inside a Kiro stream.
+
+    Args:
+        error: Upstream refusal with a bounded, locally generated explanation.
+
+    Returns:
+        HTTP 400 response shared by the OpenAI and Anthropic routes.
+    """
+    logger.warning("Kiro refused the response: {}", str(error))
+    return JSONResponse(status_code=400, content={
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": str(error)},
+    })
 
 
 def summarize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
