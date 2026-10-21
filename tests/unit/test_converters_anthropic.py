@@ -1896,3 +1896,34 @@ def test_document_inside_typed_tool_result_preserves_contents() -> None:
     assert len(results) == 1
     assert results[0]['tool_use_id'] == 'call_doc'
     assert results[0]['content'] == '\nresult.txt\ncomplete tool output\nlast line\n'
+
+
+@pytest.mark.parametrize('roles', [
+    ['system', 'user'],
+    ['user', 'system', 'assistant', 'system', 'user'],
+    ['user', 'system', 'system'],
+    ['system'],
+])
+def test_inline_system_messages_preserve_order_and_separate_system_prompt(roles: list[str]) -> None:
+    """Keep leading, repeated, and trailing inline instructions in their original positions."""
+    texts = [f'<original-message-{i}>' for i in range(len(roles))]
+    request = AnthropicMessagesRequest.model_validate({
+        'model': 'claude-sonnet-4.5', 'max_tokens': 128,
+        'system': [{'type': 'text', 'text': '<top-level-system>'}],
+        'messages': [{'role': role, 'content': [{'type': 'text', 'text': text}],
+                      'output_config': {'effort': 'high'}} for role, text in zip(roles, texts)],
+    })
+    original = request.model_dump()
+    unified = convert_anthropic_messages(request.messages)
+    assert [message.role for message in unified] == roles
+    assert [message.content for message in unified] == texts
+    payload = anthropic_to_kiro(request, 'inline-system-test', '')
+    state = payload['conversationState']
+    sent_parts = [next(iter(message.values()))['content'] for message in state.get('history', [])]
+    sent_parts.append(state['currentMessage']['userInputMessage']['content'])
+    sent = '\n'.join(sent_parts)
+    assert sent.count('<top-level-system>') == 1
+    assert sent.index('<top-level-system>') < sent.index(texts[0])
+    assert all(sent.count(text) == 1 for text in texts)
+    assert [sent.index(text) for text in texts] == sorted(sent.index(text) for text in texts)
+    assert request.model_dump() == original

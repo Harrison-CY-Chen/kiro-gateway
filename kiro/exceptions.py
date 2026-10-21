@@ -37,6 +37,7 @@ MAX_VALIDATION_ERRORS: int = 10
 MAX_VALIDATION_FIELD_LENGTH: int = 120
 MAX_VALIDATION_MESSAGE_LENGTH: int = 160
 MAX_VALIDATION_LOCATION_DEPTH: int = 12
+MAX_VALIDATION_ERROR_MESSAGE_LENGTH: int = 480
 
 
 def summarize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -95,6 +96,30 @@ def sanitize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, A
     return sanitized
 
 
+def format_validation_message(errors: List[Dict[str, Any]]) -> str:
+    """Expose bounded field diagnostics in clients that show only error.message.
+
+    Args:
+        errors: Sanitized field diagnostics without request inputs or context.
+
+    Returns:
+        A compact message containing up to three invalid field locations.
+    """
+    diagnostics = []
+    for error in errors[:3]:
+        field = ""
+        for part in error["loc"]:
+            if isinstance(part, int):
+                field += f"[{part}]"
+            else:
+                field += ("." if field else "") + str(part)
+        diagnostics.append(f"{field or 'request'}: {error['msg']}")
+    message = "Request validation failed. " + (
+        "; ".join(diagnostics) if diagnostics else "Check the request fields."
+    )
+    return message[:MAX_VALIDATION_ERROR_MESSAGE_LENGTH]
+
+
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """
     Pydantic validation error handler.
@@ -133,7 +158,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "type": "error",
             "error": {
                 "type": "invalid_request_error",
-                "message": "Request validation failed. Check the field locations in 'detail' and correct the indicated values.",
+                "message": format_validation_message(sanitized_errors),
             },
             "detail": sanitized_errors,
             "omitted_errors": len(errors) - len(sanitized_errors),

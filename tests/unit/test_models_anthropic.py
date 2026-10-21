@@ -1788,3 +1788,20 @@ class TestPlainTextDocumentBlocks:
         """Reject sources that would otherwise be accepted and silently discarded."""
         with pytest.raises(ValidationError):
             AnthropicMessage(role='user', content=[{'type': 'document', 'source': source}])
+
+
+@pytest.mark.parametrize('content', ['inline instruction', [{'type': 'text', 'text': 'inline instruction'}]])
+def test_inline_system_role_accepts_claude_code_metadata(content: object) -> None:
+    """Accept Claude Code system messages without losing extension metadata."""
+    message = AnthropicMessage.model_validate({
+        'role': 'system', 'content': content, 'output_config': {'effort': 'high'},
+    })
+    assert message.role == 'system'
+    assert message.model_dump()['output_config'] == {'effort': 'high'}
+
+
+@pytest.mark.parametrize('role', ['developer', 'tool', 'invalid', '', None, 123])
+def test_unsupported_anthropic_roles_remain_invalid(role: object) -> None:
+    """Avoid accepting arbitrary malformed roles while allowing inline system text."""
+    with pytest.raises(ValidationError):
+        AnthropicMessage.model_validate({'role': role, 'content': 'message'})

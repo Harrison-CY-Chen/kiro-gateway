@@ -453,3 +453,40 @@ def test_invalid_large_document_returns_bounded_error(test_client: TestClient, s
     assert len(response.content) < 8192
     assert 'PRIVATE_DOCUMENT_BODY' not in response.text
     assert response.json()['omitted_errors'] > 0
+
+
+@pytest.mark.parametrize('api', ['anthropic', 'openai'])
+@pytest.mark.parametrize('stream', [False, True])
+def test_inline_system_conversation_completes_in_all_api_modes(
+    test_client: TestClient, api: str, stream: bool,
+) -> None:
+    """Accept Claude Code's user/system shape through validation, conversion, and response handling."""
+    request = {
+        'model': 'claude-sonnet-4.5', 'max_tokens': 128, 'stream': stream,
+        'messages': [
+            {'role': 'user', 'content': [{'type': 'text', 'text': '<original-user>'}]},
+            {'role': 'system', 'content': [{'type': 'text', 'text': '<inline-system>'}],
+             'output_config': {'effort': 'high'}},
+        ],
+    }
+    client = AsyncMock()
+    client.request_with_retry.return_value = httpx.Response(
+        200, content=b'{"content":"synthetic reply"}{"contextUsagePercentage":1}'
+    )
+    module = 'kiro.routes_anthropic' if api == 'anthropic' else 'kiro.routes_openai'
+    path = '/v1/messages' if api == 'anthropic' else '/v1/chat/completions'
+    with patch(module + '.KiroHttpClient', return_value=client):
+        response = test_client.post(path, json=request, headers={
+            'Authorization': f'Bearer {PROXY_API_KEY}', 'x-api-key': PROXY_API_KEY,
+        })
+    assert response.status_code == 200, response.text[:500]
+    state = client.request_with_retry.call_args.args[2]['conversationState']
+    sent = '\n'.join([next(iter(message.values()))['content'] for message in state.get('history', [])]
+                     + [state['currentMessage']['userInputMessage']['content']])
+    assert sent.count('<original-user>') == sent.count('<inline-system>') == 1
+    if api == 'anthropic':
+        assert sent.index('<original-user>') < sent.index('<inline-system>')
+    if stream:
+        assert ('event: message_stop' if api == 'anthropic' else 'data: [DONE]') in response.text
+    else:
+        assert 'synthetic reply' in response.text

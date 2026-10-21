@@ -329,3 +329,32 @@ async def test_validation_summary_is_bounded_with_unicode_and_long_locations() -
     with patch('kiro.debug_logger.debug_logger'):
         response = await validation_exception_handler(MagicMock(spec=Request), exc)
     assert len(response.body) < MAX_VALIDATION_RESPONSE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_invalid_role_location_is_visible_in_short_client_error() -> None:
+    """Give clients that hide detail an actionable message without request contents."""
+    import json
+    from kiro.exceptions import validation_exception_handler
+    exc = MagicMock(spec=RequestValidationError)
+    exc.errors.return_value = [{
+        'type': 'literal_error', 'loc': ['body', 'messages', 1, 'role'],
+        'msg': "Input should be 'user', 'assistant' or 'system'", 'input': 'PRIVATE_ROLE',
+    }]
+    with patch('kiro.debug_logger.debug_logger'):
+        response = await validation_exception_handler(MagicMock(spec=Request), exc)
+    message = json.loads(response.body)['error']['message']
+    assert 'body.messages[1].role' in message
+    assert "'system'" in message
+    assert 'PRIVATE_ROLE' not in response.body.decode()
+
+
+def test_short_validation_message_bounds_diagnostics_and_handles_empty_errors() -> None:
+    """Bound short messages separately and handle empty diagnostics without crashing."""
+    from kiro.exceptions import format_validation_message, MAX_VALIDATION_ERROR_MESSAGE_LENGTH
+    assert format_validation_message([]) == 'Request validation failed. Check the request fields.'
+    errors = [{'loc': ['body', 'messages', i, 'role'], 'msg': 'Invalid role'} for i in range(10)]
+    message = format_validation_message(errors)
+    assert 'messages[2].role' in message and 'messages[3].role' not in message
+    errors[0]['msg'] = '界' * 1000
+    assert len(format_validation_message(errors)) <= MAX_VALIDATION_ERROR_MESSAGE_LENGTH

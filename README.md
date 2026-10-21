@@ -143,7 +143,15 @@ Select the explicit gateway model ID when a built-in option is unavailable on
 your Kiro account. Discovery does not switch the current model automatically.
 The gateway continues to pass unlisted model IDs upstream when requested directly.
 
-### Claude Code text attachments and validation errors
+### Claude Code messages, text attachments, and validation errors
+
+Anthropic requests also accept inline `role="system"` messages emitted by Claude
+Code. Their text stays in conversation order. Kiro only supports user/assistant
+history roles, so the shared converter maps inline system messages to user
+messages; it does not move them into the top-level system prompt. The separate
+Anthropic `system` field continues to use the gateway's system prompt handling.
+OpenAI system messages retain their existing system prompt handling. Both
+streaming and non-streaming modes support these formats.
 
 Inline `document` blocks with `source.type="text"`, `media_type="text/plain"`,
 and a string `data` field are converted to text without trimming their title,
@@ -155,6 +163,8 @@ these sources are not fetched or silently discarded.
 Validation errors return only bounded field diagnostics, never the request body
 or Pydantic's repeated input objects. Responses stay below 8 KiB so a malformed
 large conversation cannot create a multi-megabyte error in the client UI.
+The short error message includes invalid field locations, so clients that hide
+the detailed error array still show an actionable diagnostic.
 An old conversation that already contains such an error may still be expensive
 to display; start a fresh conversation or use terminal mode to resume it.
 

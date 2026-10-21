@@ -270,6 +270,7 @@ def convert_anthropic_messages(
     - Text content (string or list of text blocks)
     - Tool use blocks (assistant messages)
     - Tool result blocks (user messages)
+    - Inline system text, kept in order for the core's Kiro role normalization
 
     Args:
         messages: List of Anthropic messages
