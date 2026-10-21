@@ -288,4 +288,44 @@ class TestValidationExceptionHandlerEdgeCases:
             assert response.status_code == 422
             
             body = json.loads(response.body.decode())
-            assert "Привет мир" in body["body"]
+            assert body["body"] == ""
+            mock_request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_validation_errors_never_echo_large_inputs_or_context() -> None:
+    """Keep malformed multi-megabyte conversations out of responses and routine logs."""
+    import json
+    from kiro.exceptions import validation_exception_handler, MAX_VALIDATION_RESPONSE_BYTES
+    sentinel = 'PRIVATE_REQUEST_CONTENT_DO_NOT_ECHO'
+    request = MagicMock(spec=Request)
+    request.body = AsyncMock(return_value=(sentinel * 100000).encode())
+    errors = [{'type': 'missing', 'loc': ['body', 'messages', 0, 'content', i],
+               'msg': 'Field required', 'input': sentinel * 100000,
+               'ctx': {'error': ValueError(sentinel)}} for i in range(50)]
+    exc = MagicMock(spec=RequestValidationError)
+    exc.errors.return_value = errors
+    with patch('kiro.exceptions.logger') as log, patch('kiro.debug_logger.debug_logger') as debug:
+        response = await validation_exception_handler(request, exc)
+    payload = json.loads(response.body)
+    assert response.status_code == 422
+    assert len(response.body) < MAX_VALIDATION_RESPONSE_BYTES
+    assert sentinel not in response.body.decode()
+    assert sentinel not in str(log.error.call_args)
+    assert sentinel not in str(debug.flush_on_error.call_args)
+    assert payload['omitted_errors'] > 0
+    assert payload['error']['type'] == 'invalid_request_error'
+    assert all(set(error) == {'type', 'loc', 'msg'} for error in payload['detail'])
+    request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_validation_summary_is_bounded_with_unicode_and_long_locations() -> None:
+    """Bound serialized bytes even when field names and diagnostic messages are very long."""
+    from kiro.exceptions import validation_exception_handler, MAX_VALIDATION_RESPONSE_BYTES
+    exc = MagicMock(spec=RequestValidationError)
+    exc.errors.return_value = [{'type': '字' * 1000, 'loc': ['界' * 1000] * 100,
+                               'msg': '錯' * 10000, 'input': b'private'}] * 500
+    with patch('kiro.debug_logger.debug_logger'):
+        response = await validation_exception_handler(MagicMock(spec=Request), exc)
+    assert len(response.body) < MAX_VALIDATION_RESPONSE_BYTES

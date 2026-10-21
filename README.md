@@ -143,6 +143,21 @@ Select the explicit gateway model ID when a built-in option is unavailable on
 your Kiro account. Discovery does not switch the current model automatically.
 The gateway continues to pass unlisted model IDs upstream when requested directly.
 
+### Claude Code text attachments and validation errors
+
+Inline `document` blocks with `source.type="text"`, `media_type="text/plain"`,
+and a string `data` field are converted to text without trimming their title,
+context, or contents. They work in Anthropic messages and tool results, and as
+content blocks in OpenAI-compatible requests, in streaming and non-streaming modes.
+Convert PDF, URL, and Files API references to inline text before sending them;
+these sources are not fetched or silently discarded.
+
+Validation errors return only bounded field diagnostics, never the request body
+or Pydantic's repeated input objects. Responses stay below 8 KiB so a malformed
+large conversation cannot create a multi-megabyte error in the client UI.
+An old conversation that already contains such an error may still be expensive
+to display; start a fresh conversation or use terminal mode to resume it.
+
 ### Option 1: JSON Credentials File (Kiro IDE / Enterprise)
 
 Specify the path to the credentials file:

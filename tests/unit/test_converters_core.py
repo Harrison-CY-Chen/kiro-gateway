@@ -6455,3 +6455,25 @@ class TestBuildKiroPayloadWithThinkingConfig:
         print(f"Checking for <max_thinking_length>7000</max_thinking_length> in content...")
         assert "<max_thinking_length>7000</max_thinking_length>" in content
         assert "<thinking_mode>enabled</thinking_mode>" in content
+
+@pytest.mark.parametrize('as_model', [False, True])
+@pytest.mark.parametrize('adapter', ['core', 'anthropic'])
+def test_document_extraction_preserves_order_and_complete_text(as_model: bool, adapter: str) -> None:
+    """Preserve documents and adjacent text through either adapter's extraction path."""
+    from kiro.models_anthropic import DocumentContentBlock
+    from kiro.converters_anthropic import convert_anthropic_content_to_text
+    text = 'first line\n文檔原文\n' + 'unabridged data ' * 1000
+    block = {'type': 'document', 'title': 'report.txt', 'context': 'original context',
+             'source': {'type': 'text', 'media_type': 'text/plain', 'data': text}}
+    document = DocumentContentBlock(**block) if as_model else block
+    extract = extract_text_content if adapter == 'core' else convert_anthropic_content_to_text
+    result = extract([{'type': 'text', 'text': 'before'}, document, {'type': 'text', 'text': 'after'}])
+    assert result == 'before\nreport.txt\noriginal context\n' + text + '\nafter'
+    assert result.count(text) == 1
+
+
+@pytest.mark.parametrize('source', [None, {}, {'type': 'file'}, {'type': 'text', 'data': 42}])
+def test_invalid_document_is_not_silently_dropped(source: object) -> None:
+    """Raise an actionable conversion error when an OpenAI extension carries a bad document."""
+    with pytest.raises(ValueError, match='inline text/plain'):
+        extract_text_content([{'type': 'document', 'source': source}])

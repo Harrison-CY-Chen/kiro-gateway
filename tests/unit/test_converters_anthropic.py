@@ -1884,3 +1884,15 @@ class TestAnthropicToKiroIntegration:
         print(f"Checking for <max_thinking_length>6000</max_thinking_length>...")
         assert "<max_thinking_length>6000</max_thinking_length>" in content
         assert "<thinking_mode>enabled</thinking_mode>" in content
+
+
+def test_document_inside_typed_tool_result_preserves_contents() -> None:
+    """Retain inline document text when Claude Code wraps it in a tool result."""
+    block = ToolResultContentBlock(tool_use_id='call_doc', content=[{
+        'type': 'document', 'title': 'result.txt',
+        'source': {'type': 'text', 'media_type': 'text/plain', 'data': 'complete tool output\nlast line'},
+    }])
+    results = extract_tool_results_from_anthropic_content([block])
+    assert len(results) == 1
+    assert results[0]['tool_use_id'] == 'call_doc'
+    assert results[0]['content'] == '\nresult.txt\ncomplete tool output\nlast line\n'

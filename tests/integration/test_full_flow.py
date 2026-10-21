@@ -395,3 +395,61 @@ class TestHealthEndpointIntegration:
         assert root_response.json()["version"] == health_response.json()["version"]
         
         print("Health endpoints are consistent")
+
+
+class TestPlainTextAttachmentFlows:
+    """Exercise attachment conversion through real routes and response processors."""
+
+    @pytest.mark.parametrize('api', ['anthropic', 'openai'])
+    @pytest.mark.parametrize('stream', [False, True])
+    def test_documents_reach_upstream_without_loss_in_all_api_modes(
+        self, test_client: TestClient, api: str, stream: bool,
+    ) -> None:
+        """Accept text documents and complete all four API/streaming combinations."""
+        document = {'type': 'document', 'title': 'attachment.txt', 'context': 'original context',
+                    'source': {'type': 'text', 'media_type': 'text/plain', 'data': 'complete document body\nline two'}}
+        request = {'model': 'claude-sonnet-4.5', 'max_tokens': 128, 'stream': stream,
+                   'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'Read:'}, document]}]}
+        client = AsyncMock()
+        client.request_with_retry.return_value = httpx.Response(
+            200, content=b'{"content":"synthetic reply"}{"contextUsagePercentage":1}'
+        )
+        path = '/v1/messages' if api == 'anthropic' else '/v1/chat/completions'
+        module = 'kiro.routes_anthropic' if api == 'anthropic' else 'kiro.routes_openai'
+        with patch(module + '.KiroHttpClient', return_value=client):
+            response = test_client.post(path, json=request, headers={'Authorization': f'Bearer {PROXY_API_KEY}', 'x-api-key': PROXY_API_KEY})
+        assert response.status_code == 200, response.text[:500]
+        payload = client.request_with_retry.call_args.args[2]
+        sent = payload['conversationState']['currentMessage']['userInputMessage']['content']
+        assert 'attachment.txt' in sent and 'original context' in sent
+        assert document['source']['data'] in sent
+        if stream:
+            assert ('event: message_stop' if api == 'anthropic' else 'data: [DONE]') in response.text
+        else:
+            assert 'synthetic reply' in response.text
+
+    @pytest.mark.parametrize('api', ['anthropic', 'openai'])
+    def test_large_invalid_requests_return_small_diagnostics(self, test_client: TestClient, api: str) -> None:
+        """Keep validation errors small across both request surfaces."""
+        request = {'max_tokens': 128, 'messages': [{'role': 'user', 'content': 'PRIVATE_DOCUMENT_BODY' * 100000}]}
+        path = '/v1/messages' if api == 'anthropic' else '/v1/chat/completions'
+        response = test_client.post(path, json=request, headers={'Authorization': f'Bearer {PROXY_API_KEY}', 'x-api-key': PROXY_API_KEY})
+        assert response.status_code == 422
+        assert len(response.content) < 8192
+        assert 'PRIVATE_DOCUMENT_BODY' not in response.text
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_invalid_large_document_returns_bounded_error(test_client: TestClient, stream: bool) -> None:
+    """Reproduce union-validation amplification without reflecting attached documents."""
+    response = test_client.post('/v1/messages', headers={'x-api-key': PROXY_API_KEY}, json={
+        'model': 'claude-sonnet-4.5', 'max_tokens': 128, 'stream': stream,
+        'messages': [{'role': 'user', 'content': [{
+            'type': 'document', 'source': {'type': 'base64', 'media_type': 'application/pdf',
+                                         'data': 'PRIVATE_DOCUMENT_BODY' * 10000},
+        }] * 2}],
+    })
+    assert response.status_code == 422
+    assert len(response.content) < 8192
+    assert 'PRIVATE_DOCUMENT_BODY' not in response.text
+    assert response.json()['omitted_errors'] > 0

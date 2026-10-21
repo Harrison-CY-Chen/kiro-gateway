@@ -24,12 +24,43 @@ Contains functions for handling validation errors and other exceptions
 in a JSON-serialization compatible format.
 """
 
+import json
 from typing import Any, List, Dict
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
+
+MAX_VALIDATION_RESPONSE_BYTES: int = 8192
+MAX_VALIDATION_ERRORS: int = 10
+MAX_VALIDATION_FIELD_LENGTH: int = 120
+MAX_VALIDATION_MESSAGE_LENGTH: int = 160
+MAX_VALIDATION_LOCATION_DEPTH: int = 12
+
+
+def summarize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build bounded field diagnostics without echoing request inputs or context.
+
+    Args:
+        errors: Pydantic validation errors, which can reference the entire request.
+
+    Returns:
+        A bounded list containing only error types, field locations, and messages.
+    """
+    summary = []
+    for error in errors[:MAX_VALIDATION_ERRORS]:
+        location = error.get("loc", [])[:MAX_VALIDATION_LOCATION_DEPTH]
+        item = {
+            "type": str(error.get("type", "value_error"))[:MAX_VALIDATION_FIELD_LENGTH],
+            "loc": [part if isinstance(part, int) else str(part)[:MAX_VALIDATION_FIELD_LENGTH]
+                    for part in location],
+            "msg": str(error.get("msg", "Invalid value"))[:MAX_VALIDATION_MESSAGE_LENGTH],
+        }
+        if len(json.dumps(summary + [item], ensure_ascii=False).encode("utf-8")) > MAX_VALIDATION_RESPONSE_BYTES // 2:
+            break
+        summary.append(item)
+    return summary
 
 
 def sanitize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -68,8 +99,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """
     Pydantic validation error handler.
     
-    Logs error details and returns an informative response.
-    Correctly handles bytes objects in errors by converting them to strings.
+    Returns bounded field diagnostics without echoing conversation contents.
     Also flushes debug logs for validation errors when DEBUG_MODE is enabled.
     
     Args:
@@ -79,15 +109,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     Returns:
         JSONResponse with error details and status 422
     """
-    body = await request.body()
-    body_str = body.decode("utf-8", errors="replace")
-    
-    # Sanitize errors for JSON serialization
-    sanitized_errors = sanitize_validation_errors(exc.errors())
+    # Union-validation failures can otherwise repeat a large conversation many times.
+    # Never echo request bodies or Pydantic's input/ctx objects into client errors.
+    errors = exc.errors()
+    sanitized_errors = summarize_validation_errors(errors)
     
     logger.error(f"Validation error (422): {sanitized_errors}")
-    # Log body at DEBUG level to avoid cluttering console with potentially large payloads
-    # logger.debug(f"Request body: {body_str[:500]}...")
     
     # Flush debug logs for validation errors
     # This is called AFTER middleware has initialized debug logging,
@@ -102,5 +129,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     return JSONResponse(
         status_code=422,
-        content={"detail": sanitized_errors, "body": body_str[:500]},
+        content={
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Request validation failed. Check the field locations in 'detail' and correct the indicated values.",
+            },
+            "detail": sanitized_errors,
+            "omitted_errors": len(errors) - len(sanitized_errors),
+            "body": "",
+        },
     )

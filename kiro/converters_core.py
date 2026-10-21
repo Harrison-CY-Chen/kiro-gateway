@@ -135,6 +135,38 @@ class KiroPayloadResult:
 # Text Content Extraction
 # ==================================================================================================
 
+def extract_document_text(block: Any) -> str:
+    """Convert an inline text document while preserving all textual fields.
+
+    Args:
+        block: Document content block as a dictionary or a Pydantic model.
+
+    Returns:
+        Document title, context, and complete source text with line boundaries.
+
+    Raises:
+        ValueError: A document source cannot be translated without losing content.
+    """
+    document = block if isinstance(block, dict) else block.model_dump()
+    source = document.get("source")
+    if (not isinstance(source, dict) or source.get("type") != "text"
+            or source.get("media_type", "text/plain") != "text/plain"
+            or not isinstance(source.get("data"), str)):
+        raise ValueError(
+            "Document attachments must use an inline text/plain source. "
+            "Convert PDF, URL, or file-reference attachments to text before sending them."
+        )
+    parts = []
+    for key in ("title", "context"):
+        value = document.get(key)
+        if value is not None:
+            if not isinstance(value, str):
+                raise ValueError(f"Document {key} must be text")
+            parts.append(value)
+    parts.append(source["data"])
+    return "\n" + "\n".join(parts) + "\n"
+
+
 def extract_text_content(content: Any) -> str:
     """
     Extracts text content from various formats.
@@ -165,6 +197,10 @@ def extract_text_content(content: Any) -> str:
     if isinstance(content, list):
         text_parts = []
         for item in content:
+            block_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+            if block_type == "document":
+                text_parts.append(extract_document_text(item))
+                continue
             if isinstance(item, dict):
                 # Skip image and tool_reference blocks - they're handled separately
                 if item.get("type") in ("image", "image_url", "tool_reference"):

@@ -47,6 +47,29 @@ class TextContentBlock(BaseModel):
     text: str
 
 
+class PlainTextDocumentSource(BaseModel):
+    """Inline document text supported by the gateway's text-only conversion."""
+
+    type: Literal["text"] = "text"
+    media_type: Literal["text/plain"] = "text/plain"
+    data: str
+
+
+class DocumentContentBlock(BaseModel):
+    """A plain-text document with optional title and explanatory context.
+
+    Binary, URL, and Files API sources require client-side conversion to text.
+    Citation and cache metadata are accepted without claiming provider support.
+    """
+
+    type: Literal["document"] = "document"
+    source: PlainTextDocumentSource
+    title: Optional[str] = None
+    context: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
 class ThinkingContentBlock(BaseModel):
     """
     Thinking content block in Anthropic format.
@@ -103,7 +126,7 @@ class ToolResultContentBlock(BaseModel):
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str
     content: Optional[
-        Union[str, List[Union["TextContentBlock", "ImageContentBlock", "ToolReferenceContentBlock"]]]
+        Union[str, List[Union["TextContentBlock", "ImageContentBlock", "ToolReferenceContentBlock", "DocumentContentBlock"]]]
     ] = None
     is_error: Optional[bool] = None
 
@@ -165,6 +188,7 @@ class ImageContentBlock(BaseModel):
 # Union type for all content blocks (including images and thinking)
 ContentBlock = Union[
     TextContentBlock,
+    DocumentContentBlock,
     ThinkingContentBlock,
     ImageContentBlock,
     ToolUseContentBlock,

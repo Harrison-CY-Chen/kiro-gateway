@@ -35,6 +35,7 @@ more than GPT-4 (cl100k_base). This is due to differences in BPE vocabularies.
 import json
 from typing import List, Dict, Any, Optional
 from loguru import logger
+from kiro.converters_core import extract_document_text
 
 # Lazy loading of tiktoken to speed up import
 _encoding = None
@@ -148,6 +149,8 @@ def count_message_tokens(messages: List[Dict[str, Any]], apply_claude_correction
                         item_type = item.get("type")
                         if item_type == "text":
                             total_tokens += count_tokens(item.get("text", ""), apply_claude_correction=False)
+                        elif item_type == "document":
+                            total_tokens += count_tokens(extract_document_text(item), apply_claude_correction=False)
                         elif item_type in {"image_url", "image"}:
                             # Estimate image as fixed cost to avoid significant undercount
                             total_tokens += 100
@@ -172,6 +175,10 @@ def count_message_tokens(messages: List[Dict[str, Any]], apply_claude_correction
                                             total_tokens += count_tokens(
                                                 result_block.get("text", ""),
                                                 apply_claude_correction=False
+                                            )
+                                        elif result_type == "document":
+                                            total_tokens += count_tokens(
+                                                extract_document_text(result_block), apply_claude_correction=False
                                             )
                                         elif result_type in {"image_url", "image"}:
                                             total_tokens += 100

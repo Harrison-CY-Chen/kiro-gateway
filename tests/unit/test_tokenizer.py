@@ -1057,3 +1057,16 @@ class TestTokenizerIntegration:
         assert len(set(results)) == 1, "Results should be consistent"
     
     
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_document_tokens_include_title_context_and_body(nested: bool) -> None:
+    """Include document contents in request accounting, including nested tool results."""
+    from kiro.converters_core import extract_document_text
+    document = {'type': 'document', 'title': 'report.txt', 'context': 'file context',
+                'source': {'type': 'text', 'media_type': 'text/plain', 'data': 'complete body ' * 200}}
+    content = [{'type': 'tool_result', 'tool_use_id': 'call', 'content': [document]}] if nested else [document]
+    baseline = [{'type': 'tool_result', 'tool_use_id': 'call', 'content': []}] if nested else []
+    measured = count_message_tokens([{'role': 'user', 'content': content}], apply_claude_correction=False)
+    empty = count_message_tokens([{'role': 'user', 'content': baseline}], apply_claude_correction=False)
+    assert measured - empty == count_tokens(extract_document_text(document), apply_claude_correction=False)

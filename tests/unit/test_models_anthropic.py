@@ -1757,3 +1757,34 @@ class TestThinkingParameter:
         print(f"Comparing thinking: got={request.thinking}")
         assert request.thinking is not None
         assert request.thinking["type"] == "disabled"
+
+
+class TestPlainTextDocumentBlocks:
+    """Validate Claude Code text attachments without accepting lossy binary sources."""
+
+    @pytest.mark.parametrize('nested', [False, True])
+    def test_document_text_is_preserved_in_messages_and_tool_results(self, nested: bool) -> None:
+        """Accept inline text documents in both supported attachment positions."""
+        document = {'type': 'document', 'title': 'notes.txt', 'context': 'Read the complete file',
+                    'source': {'type': 'text', 'media_type': 'text/plain', 'data': 'first\n第二行\nlast'}}
+        block = {'type': 'tool_result', 'tool_use_id': 'tool_doc', 'content': [document]} if nested else document
+        message = AnthropicMessage(role='user', content=[block])
+        restored = message.model_dump()['content'][0]
+        if nested:
+            restored = restored['content'][0]
+        assert restored['source']['data'] == document['source']['data']
+        assert restored['title'] == 'notes.txt'
+        assert restored['context'] == 'Read the complete file'
+
+    @pytest.mark.parametrize('source', [
+        {'type': 'url', 'url': 'https://example.com/report.pdf'},
+        {'type': 'base64', 'media_type': 'application/pdf', 'data': 'JVBERi0='},
+        {'type': 'file', 'file_id': 'file-test'},
+        {'type': 'text', 'media_type': 'image/png', 'data': 'text'},
+        {'type': 'text', 'media_type': 'text/plain'},
+        {'type': 'text', 'media_type': 'text/plain', 'data': 123},
+    ])
+    def test_unsupported_or_malformed_document_sources_are_rejected(self, source: dict) -> None:
+        """Reject sources that would otherwise be accepted and silently discarded."""
+        with pytest.raises(ValidationError):
+            AnthropicMessage(role='user', content=[{'type': 'document', 'source': source}])

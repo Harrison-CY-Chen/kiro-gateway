@@ -41,6 +41,7 @@ from kiro.converters_core import (
     ThinkingConfig,
     build_kiro_payload,
     extract_text_content,
+    extract_document_text,
     extract_images_from_content,
 )
 
@@ -65,6 +66,10 @@ def convert_anthropic_content_to_text(content: Any) -> str:
     if isinstance(content, list):
         text_parts = []
         for block in content:
+            block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if block_type == "document":
+                text_parts.append(extract_document_text(block))
+                continue
             if isinstance(block, dict):
                 if block.get("type") == "text":
                     text_parts.append(block.get("text", ""))
