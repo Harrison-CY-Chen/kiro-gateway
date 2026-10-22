@@ -111,6 +111,55 @@ The server will be available at `http://localhost:8000`
 
 > 💡 **Advanced users:** Looking for multi-account support? See [Account System](#-account-system-advanced) below.
 
+### macOS login startup with Podman
+
+For an existing `kiro-gateway` container on `podman-machine-default`, install the
+login launcher from the repository root:
+
+```bash
+mkdir -p "$HOME/workspace" "$HOME/Library/LaunchAgents"
+cp scripts/macos/kiro-gateway-start.sh "$HOME/workspace/kiro-gateway-start.sh"
+python3 - <<'PY'
+import pathlib
+import plistlib
+
+home = pathlib.Path.home()
+source = pathlib.Path("scripts/macos/com.user.kiro-gateway.plist")
+configuration = plistlib.loads(source.read_bytes())
+configuration["ProgramArguments"][1] = str(home / "workspace/kiro-gateway-start.sh")
+target = home / "Library/LaunchAgents/com.user.kiro-gateway.plist"
+target.write_bytes(plistlib.dumps(configuration))
+PY
+plutil -lint "$HOME/Library/LaunchAgents/com.user.kiro-gateway.plist"
+launchctl bootout "gui/$(id -u)/com.user.kiro-gateway" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.user.kiro-gateway.plist"
+```
+
+The agent runs at login, checks health every 60 seconds, and retries failed
+startup with a 30-second throttle. `AbandonProcessGroup=true` preserves the
+Podman background processes after the launcher exits. Startup has a 180-second
+deadline, waits for the named machine's connection, and reports success only
+after `/health` returns `status="healthy"`. Concurrent checks share a lock.
+
+The launcher starts the existing container without rebuilding, pulling an image,
+or changing credentials. A healthy gateway is left running. It uses the
+`podman-machine-default-root` connection; for a different setup, set
+`KIRO_GATEWAY_MACHINE`, `KIRO_GATEWAY_CONNECTION`, or `KIRO_GATEWAY_CONTAINER`
+in the agent's `EnvironmentVariables`. Bash, curl, Python 3, and Podman must be
+available at login. Logs are in `/tmp/kiro-gateway-start.log` and
+`/tmp/kiro-gateway-launchd.err`.
+
+To run a check immediately:
+
+```bash
+launchctl kickstart "gui/$(id -u)/com.user.kiro-gateway"
+curl --noproxy '*' --fail http://127.0.0.1:8000/health
+```
+
+This agent restores availability after a container or VM stops. Unload it with
+`launchctl bootout "gui/$(id -u)/com.user.kiro-gateway"` before intentionally
+stopping the gateway for maintenance.
+
 ### Model discovery and Claude Code
 
 The gateway retrieves account-specific models and token limits from the regional
